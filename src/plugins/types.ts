@@ -399,6 +399,10 @@ export type SystemPromptSectionOverride = {
 export type PluginHookModifySystemPromptSectionsEvent = {
   /** The sections that will be assembled into the final prompt */
   sections: Record<string, string>;
+  /** Provider ID for the current run */
+  provider?: string;
+  /** Model ID for the current run */
+  model?: string;
   /** Raw parameters passed to buildAgentSystemPrompt */
   params: {
     workspaceDir: string;

@@ -3,7 +3,8 @@
  *
  * Allows fine-grained customization of the base system prompt without modifying source code.
  * Supports:
- * - Config file: SYSTEM_PROMPT_OVERRIDE.md in workspace
+ * - Config file: SYSTEM_PROMPT_OVERRIDE.md in workspace (human-controlled)
+ * - Agent experiments: .openclaw/prompt-experiments.md (agent-controlled, safe sections only)
  * - Plugin hook: modify_system_prompt_sections
  * - Agent tool: read/write system prompt configuration
  */
@@ -15,7 +16,43 @@ import type { ResolvedSystemPromptOverride } from "../config/types.system-prompt
 import { resolveUserPath } from "../utils.js";
 
 export const DEFAULT_SYSTEM_PROMPT_OVERRIDE_FILENAME = "SYSTEM_PROMPT_OVERRIDE.md";
+export const AGENT_EXPERIMENTS_FILENAME = ".openclaw/prompt-experiments.md";
 export const SYSTEM_PROMPT_LOG_FILENAME = ".openclaw/system-prompt-log.txt";
+
+/**
+ * Sections that agents are allowed to modify in prompt-experiments.md.
+ * Protected sections require SYSTEM_PROMPT_OVERRIDE.md (human approval).
+ */
+export const AGENT_SAFE_SECTIONS = new Set([
+  "prepend",
+  "append",
+  "tooling",
+  "toolCallStyle",
+  "skills",
+  "memory",
+  "workspace",
+  "workspaceFiles",
+  "heartbeats",
+  "reasoningFormat",
+  "selfUpdate",
+  "modelAliases",
+  "docs",
+  "time",
+  "runtime",
+]);
+
+export const PROTECTED_SECTIONS = new Set([
+  "safety",
+  "messaging",
+  "reactions",
+  "authorizedSenders",
+  "sandbox",
+  "groupChatContext",
+  "voice",
+  "replyTags",
+  "silentReplies",
+  "openclawCli",
+]);
 
 /**
  * Parse a markdown file into section overrides.
@@ -132,6 +169,43 @@ export async function loadSystemPromptOverride(params: {
 
   const content = await fs.readFile(overridePath, "utf-8");
   return parseOverrideMarkdown(content);
+}
+
+/**
+ * Load agent experiments file (safe sections only).
+ * Returns null if file doesn't exist or is empty.
+ */
+export async function loadAgentExperiments(params: {
+  workspaceDir: string;
+}): Promise<ResolvedSystemPromptOverride | null> {
+  const workspaceDir = resolveUserPath(params.workspaceDir);
+  const experimentsPath = path.join(workspaceDir, AGENT_EXPERIMENTS_FILENAME);
+
+  try {
+    const stat = await fs.stat(experimentsPath);
+    if (!stat.isFile()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  const content = await fs.readFile(experimentsPath, "utf-8");
+  const parsed = parseOverrideMarkdown(content);
+
+  // Filter to only agent-safe sections
+  const filteredSections: ResolvedSystemPromptOverride["sections"] = {};
+  for (const [section, override] of Object.entries(parsed.sections)) {
+    if (AGENT_SAFE_SECTIONS.has(section)) {
+      filteredSections[section] = override;
+    }
+  }
+
+  return {
+    sections: filteredSections,
+    prepend: AGENT_SAFE_SECTIONS.has("prepend") ? parsed.prepend : undefined,
+    append: AGENT_SAFE_SECTIONS.has("append") ? parsed.append : undefined,
+  };
 }
 
 /**
@@ -266,7 +340,7 @@ export function applyPromptOverrides(
 export async function logSystemPrompt(params: {
   prompt: string;
   workspaceDir: string;
-  source: "default" | "file" | "hook" | "mixed";
+  source: "default" | "file" | "hook" | "agent" | "mixed";
 }): Promise<string | undefined> {
   const logDir = path.join(resolveUserPath(params.workspaceDir), ".openclaw");
   const logPath = path.join(logDir, "system-prompt-log.txt");
@@ -309,6 +383,35 @@ export async function writeSystemPromptOverride(params: {
   const workspaceDir = resolveUserPath(params.workspaceDir);
   const overridePath = path.join(workspaceDir, DEFAULT_SYSTEM_PROMPT_OVERRIDE_FILENAME);
   await fs.writeFile(overridePath, params.content, "utf-8");
+}
+
+/**
+ * Write agent experiments file (safe sections only).
+ * Returns list of protected sections that were rejected.
+ */
+export async function writeAgentExperiments(params: {
+  workspaceDir: string;
+  content: string;
+}): Promise<{ written: boolean; rejectedSections: string[] }> {
+  const workspaceDir = resolveUserPath(params.workspaceDir);
+  const experimentsPath = path.join(workspaceDir, AGENT_EXPERIMENTS_FILENAME);
+  const parsed = parseOverrideMarkdown(params.content);
+
+  // Check for protected sections
+  const rejectedSections: string[] = [];
+  for (const section of Object.keys(parsed.sections)) {
+    if (PROTECTED_SECTIONS.has(section)) {
+      rejectedSections.push(section);
+    }
+  }
+  if (rejectedSections.length > 0) {
+    return { written: false, rejectedSections };
+  }
+
+  // Ensure .openclaw directory exists
+  await fs.mkdir(path.join(workspaceDir, ".openclaw"), { recursive: true });
+  await fs.writeFile(experimentsPath, params.content, "utf-8");
+  return { written: true, rejectedSections: [] };
 }
 
 /**
@@ -383,6 +486,50 @@ To remove a section entirely:
 \`\`\`markdown
 # silentReplies
 omit
+\`\`\`
+`;
+}
+
+/**
+ * Create a template for agent experiments (safe sections only).
+ */
+export function createExperimentsTemplate(): string {
+  return `# Prompt Experiments
+
+This file allows agents to experiment with prompt modifications in safe sections.
+Protected sections (safety, messaging, reactions) cannot be modified here.
+
+## Safe Sections
+
+The following sections can be modified in this file:
+- prepend, append (identity and context)
+- tooling, toolCallStyle (tool usage patterns)
+- skills (skills documentation)
+- memory (memory recall instructions)
+- workspace, workspaceFiles (workspace context)
+- heartbeats (heartbeat behavior)
+- reasoningFormat (reasoning display)
+- selfUpdate, modelAliases, docs, time, runtime
+
+## Protected Sections
+
+These sections require SYSTEM_PROMPT_OVERRIDE.md (human approval):
+- safety (operational constraints)
+- messaging (communication rules)
+- reactions (reaction behavior)
+- authorizedSenders, sandbox, groupChatContext, voice, replyTags, silentReplies, openclawCli
+
+## Example
+
+\`\`\`markdown
+# prepend
+You are Merlin, an expert AI agent optimizer...
+
+# toolCallStyle
+When using tools, prefer batched operations...
+
+# append
+Remember to document your changes in MEMORY.md.
 \`\`\`
 `;
 }

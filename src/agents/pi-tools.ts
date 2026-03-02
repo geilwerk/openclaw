@@ -55,6 +55,11 @@ import {
   mergeAlsoAllowPolicy,
   resolveToolProfilePolicy,
 } from "./tool-policy.js";
+import {
+  createSystemPromptExperimentsTool,
+  createSystemPromptOverrideTool,
+  createSystemPromptPatchTool,
+} from "./tools/system-prompt-override-tool.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
 
 function isOpenAIProvider(provider?: string) {
@@ -493,6 +498,19 @@ export function createOpenClawCodingTools(options?: {
       requesterAgentIdOverride: agentId,
       requesterSenderId: options?.senderId,
       senderIsOwner: options?.senderIsOwner,
+    }),
+    // System prompt override tools for self-modifying behavior
+    createSystemPromptOverrideTool({
+      workspaceDir: workspaceRoot,
+      config: options?.config,
+    }),
+    // Agent experiments tool (safe sections only)
+    createSystemPromptExperimentsTool({
+      workspaceDir: workspaceRoot,
+    }),
+    // Source patching tool (for fork owners who want to modify base prompts)
+    createSystemPromptPatchTool({
+      workspaceDir: workspaceRoot,
     }),
   ];
   const toolsForMessageProvider = applyMessageProviderToolPolicy(tools, options?.messageProvider);

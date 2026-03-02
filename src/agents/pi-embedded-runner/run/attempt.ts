@@ -78,6 +78,8 @@ import {
 } from "../../skills.js";
 import {
   applyPromptOverrides,
+  extractPromptSections,
+  loadAgentExperiments,
   loadSystemPromptOverride,
   logSystemPrompt,
 } from "../../system-prompt-override.js";
@@ -768,8 +770,11 @@ export async function runEmbeddedAttempt(
     const systemPromptOverride = createSystemPromptOverride(appendPrompt);
     let systemPromptText = systemPromptOverride();
 
-    // Apply system prompt override from workspace file
-    let overrideSource: "default" | "file" = "default";
+    // Get hook runner for override hooks
+    const hookRunner = getGlobalHookRunner();
+
+    // Apply system prompt override from workspace file (human-controlled)
+    let overrideSource: "default" | "file" | "agent" | "hook" | "mixed" = "default";
     const fileOverride = await loadSystemPromptOverride({
       workspaceDir: effectiveWorkspace,
       config: params.config,
@@ -779,15 +784,61 @@ export async function runEmbeddedAttempt(
       overrideSource = "file";
     }
 
+    // Apply agent experiments file (agent-controlled, safe sections only)
+    const agentExperiments = await loadAgentExperiments({
+      workspaceDir: effectiveWorkspace,
+    });
+    if (agentExperiments) {
+      systemPromptText = applyPromptOverrides(systemPromptText, agentExperiments);
+      overrideSource = overrideSource === "default" ? "agent" : "mixed";
+    }
+
+    // Run modify_system_prompt_sections hook for plugins
+    if (hookRunner?.hasHooks("modify_system_prompt_sections")) {
+      const hookCtx = {
+        agentId: sessionAgentId,
+        sessionKey: params.sessionKey,
+        sessionId: params.sessionId,
+        workspaceDir: effectiveWorkspace,
+        messageProvider: params.messageProvider ?? undefined,
+      };
+      const sections = extractPromptSections(systemPromptText);
+      const hookResult = await hookRunner
+        .runModifySystemPromptSections(
+          {
+            sections,
+            provider: params.provider,
+            model: params.modelId,
+            params: {
+              workspaceDir: effectiveWorkspace,
+              agentId: sessionAgentId,
+              sessionKey: params.sessionKey,
+              promptMode: isSubagentSessionKey(params.sessionKey) ? "minimal" : "full",
+              isSubagent: isSubagentSessionKey(params.sessionKey),
+            },
+          },
+          hookCtx,
+        )
+        .catch((err: unknown) => {
+          log.warn(`modify_system_prompt_sections hook failed: ${String(err)}`);
+          return undefined;
+        });
+      if (hookResult?.sections || hookResult?.prepend || hookResult?.append) {
+        systemPromptText = applyPromptOverrides(systemPromptText, {
+          sections: hookResult.sections ?? {},
+          prepend: hookResult.prepend,
+          append: hookResult.append,
+        });
+        overrideSource = overrideSource === "default" ? "hook" : "mixed";
+      }
+    }
+
     // Log the final system prompt for inspection
     await logSystemPrompt({
       prompt: systemPromptText,
       workspaceDir: effectiveWorkspace,
       source: overrideSource,
     });
-
-    // Get hook runner for later use
-    const hookRunner = getGlobalHookRunner();
 
     const sessionLock = await acquireSessionWriteLock({
       sessionFile: params.sessionFile,
