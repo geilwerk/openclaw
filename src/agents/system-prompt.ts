@@ -2,6 +2,7 @@ import { createHmac, createHash } from "node:crypto";
 import type { ReasoningLevel, ThinkLevel } from "../auto-reply/thinking.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { MemoryCitationsMode } from "../config/types.memory.js";
+import type { ResolvedSystemPromptOverride } from "../config/types.system-prompt.js";
 import { listDeliverableMessageChannels } from "../utils/message-channel.js";
 import type { ResolvedTimeFormat } from "./date-time.js";
 import type { EmbeddedContextFile } from "./pi-embedded-helpers.js";
@@ -16,6 +17,16 @@ import { sanitizeForPromptLiteral } from "./sanitize-for-prompt.js";
  */
 export type PromptMode = "full" | "minimal" | "none";
 type OwnerIdDisplay = "raw" | "hash";
+
+/**
+ * Section marker format used to identify sections for override processing.
+ * Format: <!-- SECTION:name -->...<!-- END_SECTION:name -->
+ * These markers are stripped before final output.
+ */
+export const SECTION_MARKER_PREFIX = "<!-- SECTION:";
+export const SECTION_MARKER_SUFFIX = " -->";
+export const END_SECTION_PREFIX = "<!-- END_SECTION:";
+export const END_SECTION_SUFFIX = " -->";
 
 function buildSkillsSection(params: { skillsPrompt?: string; readToolName: string }) {
   const trimmed = params.skillsPrompt?.trim();
@@ -664,6 +675,9 @@ export function buildAgentSystemPrompt(params: {
   return lines.filter(Boolean).join("\n");
 }
 
+/**
+ * Build runtime info line for the system prompt.
+ */
 export function buildRuntimeLine(
   runtimeInfo?: {
     agentId?: string;
@@ -701,4 +715,57 @@ export function buildRuntimeLine(
   ]
     .filter(Boolean)
     .join(" | ")}`;
+}
+
+/**
+ * Extract named sections from a built system prompt.
+ * Uses section markers to identify boundaries.
+ */
+export function extractPromptSections(prompt: string): Record<string, string> {
+  const sections: Record<string, string> = {};
+  const sectionRegex = /<!-- SECTION:(\w+) -->\n?([\s\S]*?)\n?<!-- END_SECTION:\1 -->/g;
+  let match;
+  while ((match = sectionRegex.exec(prompt)) !== null) {
+    sections[match[1]] = match[2].trim();
+  }
+  return sections;
+}
+
+/**
+ * Apply section overrides to a prompt.
+ */
+export function applyPromptOverrides(
+  prompt: string,
+  override: ResolvedSystemPromptOverride,
+): string {
+  let result = prompt;
+
+  // Apply section overrides
+  for (const [name, sectionOverride] of Object.entries(override.sections)) {
+    const startMarker = `${SECTION_MARKER_PREFIX}${name}${SECTION_MARKER_SUFFIX}`;
+    const endMarker = `${END_SECTION_PREFIX}${name}${END_SECTION_SUFFIX}`;
+
+    if (sectionOverride.omit) {
+      // Remove the section entirely
+      const regex = new RegExp(`${startMarker}[\\s\\S]*?${endMarker}\n?`, "g");
+      result = result.replace(regex, "");
+    } else if (sectionOverride.replace) {
+      // Replace the section content
+      const regex = new RegExp(`(${startMarker})[\\s\\S]*?(${endMarker})`, "g");
+      result = result.replace(regex, `$1\n${sectionOverride.replace}\n$2`);
+    }
+  }
+
+  // Strip section markers from final output
+  result = result.replace(/<!-- (SECTION|END_SECTION):\w+ -->\n?/g, "");
+
+  // Apply prepend/append
+  if (override.prepend?.trim()) {
+    result = `${override.prepend.trim()}\n\n${result}`;
+  }
+  if (override.append?.trim()) {
+    result = `${result}\n\n${override.append.trim()}`;
+  }
+
+  return result;
 }

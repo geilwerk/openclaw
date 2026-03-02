@@ -320,7 +320,8 @@ export type PluginHookName =
   | "subagent_spawned"
   | "subagent_ended"
   | "gateway_start"
-  | "gateway_stop";
+  | "gateway_stop"
+  | "modify_system_prompt_sections";
 
 // Agent context shared across agent hooks
 export type PluginHookAgentContext = {
@@ -354,6 +355,67 @@ export type PluginHookBeforePromptBuildEvent = {
 export type PluginHookBeforePromptBuildResult = {
   systemPrompt?: string;
   prependContext?: string;
+};
+
+// modify_system_prompt_sections hook
+// Fired AFTER the default system prompt sections are built but BEFORE final assembly.
+// Plugins can modify individual sections without replacing the entire prompt.
+export type SystemPromptSectionName =
+  | "tooling"
+  | "toolCallStyle"
+  | "safety"
+  | "openclawCli"
+  | "skills"
+  | "memory"
+  | "selfUpdate"
+  | "modelAliases"
+  | "workspace"
+  | "docs"
+  | "sandbox"
+  | "authorizedSenders"
+  | "time"
+  | "workspaceFiles"
+  | "replyTags"
+  | "messaging"
+  | "voice"
+  | "groupChatContext"
+  | "reactions"
+  | "reasoningFormat"
+  | "silentReplies"
+  | "heartbeats"
+  | "runtime";
+
+export type SystemPromptSectionOverride = {
+  /** Replace the entire section content */
+  replace?: string;
+  /** Prepend content to the section */
+  prepend?: string;
+  /** Append content to the section */
+  append?: string;
+  /** Remove the section entirely */
+  omit?: boolean;
+};
+
+export type PluginHookModifySystemPromptSectionsEvent = {
+  /** The sections that will be assembled into the final prompt */
+  sections: Record<string, string>;
+  /** Raw parameters passed to buildAgentSystemPrompt */
+  params: {
+    workspaceDir: string;
+    agentId?: string;
+    sessionKey?: string;
+    promptMode: "full" | "minimal" | "none";
+    isSubagent: boolean;
+  };
+};
+
+export type PluginHookModifySystemPromptSectionsResult = {
+  /** Override specific sections by name */
+  sections?: Record<string, SystemPromptSectionOverride>;
+  /** Prepend content to the entire prompt (before all sections) */
+  prepend?: string;
+  /** Append content to the entire prompt (after all sections) */
+  append?: string;
 };
 
 // before_agent_start hook (legacy compatibility: combines both phases)
@@ -752,6 +814,13 @@ export type PluginHookHandlerMap = {
     event: PluginHookGatewayStopEvent,
     ctx: PluginHookGatewayContext,
   ) => Promise<void> | void;
+  modify_system_prompt_sections: (
+    event: PluginHookModifySystemPromptSectionsEvent,
+    ctx: PluginHookAgentContext,
+  ) =>
+    | Promise<PluginHookModifySystemPromptSectionsResult | void>
+    | PluginHookModifySystemPromptSectionsResult
+    | void;
 };
 
 export type PluginHookRegistration<K extends PluginHookName = PluginHookName> = {

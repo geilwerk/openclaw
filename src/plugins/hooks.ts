@@ -49,6 +49,9 @@ import type {
   PluginHookToolResultPersistResult,
   PluginHookBeforeMessageWriteEvent,
   PluginHookBeforeMessageWriteResult,
+  PluginHookModifySystemPromptSectionsEvent,
+  PluginHookModifySystemPromptSectionsResult,
+  SystemPromptSectionOverride,
 } from "./types.js";
 
 // Re-export types for consumers
@@ -78,6 +81,9 @@ export type {
   PluginHookToolResultPersistContext,
   PluginHookToolResultPersistEvent,
   PluginHookToolResultPersistResult,
+  PluginHookModifySystemPromptSectionsEvent,
+  PluginHookModifySystemPromptSectionsResult,
+  SystemPromptSectionOverride,
   PluginHookBeforeMessageWriteEvent,
   PluginHookBeforeMessageWriteResult,
   PluginHookSessionContext,
@@ -145,6 +151,34 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
         ? `${acc.prependContext}\n\n${next.prependContext}`
         : (next.prependContext ?? acc?.prependContext),
   });
+
+  const mergeModifySystemPromptSections = (
+    acc: PluginHookModifySystemPromptSectionsResult | undefined,
+    next: PluginHookModifySystemPromptSectionsResult,
+  ): PluginHookModifySystemPromptSectionsResult => {
+    const mergedSections: Record<string, SystemPromptSectionOverride> = {
+      ...acc?.sections,
+    };
+    for (const [name, override] of Object.entries(next.sections ?? {})) {
+      const existing = mergedSections[name];
+      if (!existing) {
+        mergedSections[name] = override;
+      } else {
+        // Merge: later hooks win for same fields
+        mergedSections[name] = {
+          replace: override.replace ?? existing.replace,
+          prepend: override.prepend ?? existing.prepend,
+          append: override.append ?? existing.append,
+          omit: override.omit ?? existing.omit,
+        };
+      }
+    }
+    return {
+      sections: mergedSections,
+      prepend: next.prepend ?? acc?.prepend,
+      append: next.append ?? acc?.append,
+    };
+  };
 
   const mergeSubagentSpawningResult = (
     acc: PluginHookSubagentSpawningResult | undefined,
@@ -307,6 +341,21 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
         ...mergeBeforeModelResolve(acc, next),
       }),
     );
+  }
+
+  /**
+   * Run modify_system_prompt_sections hook.
+   * Allows plugins to modify individual sections of the system prompt before assembly.
+   * Runs sequentially in priority order, with later hooks overriding earlier ones.
+   */
+  async function runModifySystemPromptSections(
+    event: PluginHookModifySystemPromptSectionsEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookModifySystemPromptSectionsResult | undefined> {
+    return runModifyingHook<
+      "modify_system_prompt_sections",
+      PluginHookModifySystemPromptSectionsResult
+    >("modify_system_prompt_sections", event, ctx, mergeModifySystemPromptSections);
   }
 
   /**
@@ -718,6 +767,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     runBeforeModelResolve,
     runBeforePromptBuild,
     runBeforeAgentStart,
+    runModifySystemPromptSections,
     runLlmInput,
     runLlmOutput,
     runAgentEnd,

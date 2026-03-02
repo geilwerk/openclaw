@@ -51,6 +51,11 @@ import {
   validateAnthropicTurns,
   validateGeminiTurns,
 } from "../../pi-embedded-helpers.js";
+import {
+  applySystemPromptOverrideToSession,
+  buildEmbeddedSystemPrompt,
+  createSystemPromptOverride,
+} from "../../pi-embedded-runner/system-prompt.js";
 import { subscribeEmbeddedPiSession } from "../../pi-embedded-subscribe.js";
 import { createPreparedEmbeddedPiSettingsManager } from "../../pi-project-settings.js";
 import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
@@ -71,6 +76,11 @@ import {
   loadWorkspaceSkillEntries,
   resolveSkillsPromptForRun,
 } from "../../skills.js";
+import {
+  applyPromptOverrides,
+  loadSystemPromptOverride,
+  logSystemPrompt,
+} from "../../system-prompt-override.js";
 import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../../tool-call-id.js";
@@ -98,11 +108,6 @@ import {
 import { buildEmbeddedSandboxInfo } from "../sandbox-info.js";
 import { prewarmSessionFile, trackSessionManagerAccess } from "../session-manager-cache.js";
 import { prepareSessionManagerForRun } from "../session-manager-init.js";
-import {
-  applySystemPromptOverrideToSession,
-  buildEmbeddedSystemPrompt,
-  createSystemPromptOverride,
-} from "../system-prompt.js";
 import { dropThinkingBlocks } from "../thinking.js";
 import { collectAllowedToolNames } from "../tool-name-allowlist.js";
 import { installToolResultContextGuard } from "../tool-result-context-guard.js";
@@ -763,6 +768,27 @@ export async function runEmbeddedAttempt(
     const systemPromptOverride = createSystemPromptOverride(appendPrompt);
     let systemPromptText = systemPromptOverride();
 
+    // Apply system prompt override from workspace file
+    let overrideSource: "default" | "file" = "default";
+    const fileOverride = await loadSystemPromptOverride({
+      workspaceDir: effectiveWorkspace,
+      config: params.config,
+    });
+    if (fileOverride) {
+      systemPromptText = applyPromptOverrides(systemPromptText, fileOverride);
+      overrideSource = "file";
+    }
+
+    // Log the final system prompt for inspection
+    await logSystemPrompt({
+      prompt: systemPromptText,
+      workspaceDir: effectiveWorkspace,
+      source: overrideSource,
+    });
+
+    // Get hook runner for later use
+    const hookRunner = getGlobalHookRunner();
+
     const sessionLock = await acquireSessionWriteLock({
       sessionFile: params.sessionFile,
       maxHoldMs: resolveSessionLockMaxHoldFromTimeout({
@@ -834,9 +860,6 @@ export async function runEmbeddedAttempt(
         });
         await resourceLoader.reload();
       }
-
-      // Get hook runner early so it's available when creating tools
-      const hookRunner = getGlobalHookRunner();
 
       const { builtInTools, customTools } = splitSdkTools({
         tools,
